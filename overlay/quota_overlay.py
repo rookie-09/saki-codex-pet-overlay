@@ -4,6 +4,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,9 +13,12 @@ import tkinter.font as tkfont
 
 
 REFRESH_MS = 1_000
-INFO_REFRESH_MS = 250
-FOLLOW_POLL_MS = 33
-ANIMATE_MS = 16
+INFO_REFRESH_MS = 1_000
+FOLLOW_POLL_MS = 50
+ANIMATE_MS = 24
+MODEL_FILE_SCAN_SECONDS = 5
+TODAY_FULL_SCAN_SECONDS = 30
+SESSION_TAIL_BYTES = 96 * 1024
 SNAP_DISTANCE = 120
 PET_MISS_TOLERANCE = 8
 SWP_NOSIZE = 0x0001
@@ -79,6 +83,14 @@ PETS_PATH = Path.home() / ".codex" / "pets"
 GLOBAL_STATE_PATH = Path.home() / ".codex" / ".codex-global-state.json"
 OVERLAY_SETTINGS_PATH = Path.home() / ".codex" / "quota-overlay-settings.json"
 WORKSPACE_HINT = str(Path(__file__).resolve().parent.parent).lower()
+MODEL_CACHE = {"value": None, "files": [], "last_file_scan": 0.0}
+TODAY_COUNT_CACHE = {
+    "date": None,
+    "count": None,
+    "file_counts": {},
+    "file_signatures": {},
+    "last_full_scan": 0.0,
+}
 BUILT_IN_PET_NAMES = {
     "codex": "Codex",
     "dewey": "Dewey",
@@ -305,25 +317,50 @@ def read_configured_model():
     return match.group(1) if match else "unknown"
 
 
+def read_recent_lines(path, max_bytes=SESSION_TAIL_BYTES):
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(size - max_bytes)
+                handle.readline()
+            data = handle.read()
+    except OSError:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def recent_session_files():
+    now = time.monotonic()
+    if (
+        MODEL_CACHE["files"]
+        and now - MODEL_CACHE["last_file_scan"] < MODEL_FILE_SCAN_SECONDS
+    ):
+        return MODEL_CACHE["files"]
+
+    recent_files = []
+    if SESSIONS_PATH.exists():
+        for path in SESSIONS_PATH.rglob("*.jsonl"):
+            try:
+                recent_files.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+    recent_files.sort(reverse=True)
+    MODEL_CACHE["files"] = [path for _mtime, path in recent_files[:40]]
+    MODEL_CACHE["last_file_scan"] = now
+    return MODEL_CACHE["files"]
+
+
 def read_active_model():
     if not SESSIONS_PATH.exists():
         return read_configured_model()
 
-    recent_files = []
-    for path in SESSIONS_PATH.rglob("*.jsonl"):
-        try:
-            recent_files.append((path.stat().st_mtime, path))
-        except OSError:
-            continue
+    recent_files = recent_session_files()
     if not recent_files:
         return read_configured_model()
 
-    recent_files.sort(reverse=True)
-    for _mtime, path in recent_files[:40]:
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
+    for path in recent_files:
+        lines = read_recent_lines(path)
         for line in reversed(lines):
             try:
                 item = json.loads(line)
@@ -337,8 +374,11 @@ def read_active_model():
                 continue
             cwd = str(payload.get("cwd") or "").lower()
             if cwd and (cwd == WORKSPACE_HINT or cwd.startswith(WORKSPACE_HINT)):
+                MODEL_CACHE["value"] = model
                 return model
-    return read_configured_model()
+    fallback = MODEL_CACHE["value"] or read_configured_model()
+    MODEL_CACHE["value"] = fallback
+    return fallback
 
 
 def display_model_name(model):
@@ -469,13 +509,28 @@ def read_current_pet_name():
 
 def today_conversation_count():
     today = datetime.now().astimezone().date()
+    now = time.monotonic()
+    if TODAY_COUNT_CACHE["date"] != today:
+        TODAY_COUNT_CACHE["date"] = today
+        TODAY_COUNT_CACHE["count"] = None
+        TODAY_COUNT_CACHE["file_counts"] = {}
+        TODAY_COUNT_CACHE["file_signatures"] = {}
+        TODAY_COUNT_CACHE["last_full_scan"] = 0.0
+
     paths = set()
     for offset in (-1, 0, 1):
         day = today + timedelta(days=offset)
         day_dir = SESSIONS_PATH / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
         if day_dir.exists():
             paths.update(day_dir.glob("*.jsonl"))
-    if SESSIONS_PATH.exists():
+
+    cached_paths = {Path(path) for path in TODAY_COUNT_CACHE["file_counts"]}
+    paths.update(path for path in cached_paths if path.exists())
+
+    if (
+        SESSIONS_PATH.exists()
+        and now - TODAY_COUNT_CACHE["last_full_scan"] >= TODAY_FULL_SCAN_SECONDS
+    ):
         for path in SESSIONS_PATH.rglob("*.jsonl"):
             try:
                 modified = datetime.fromtimestamp(path.stat().st_mtime).astimezone().date()
@@ -483,17 +538,26 @@ def today_conversation_count():
                 continue
             if modified == today:
                 paths.add(path)
-    if not paths and SESSIONS_PATH.exists():
-        paths.update(SESSIONS_PATH.rglob("*.jsonl"))
+        TODAY_COUNT_CACHE["last_full_scan"] = now
+
     if not paths:
-        return None
+        TODAY_COUNT_CACHE["count"] = None
+        return TODAY_COUNT_CACHE["count"]
 
     count = 0
     for path in sorted(paths):
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            stat = path.stat()
         except OSError:
             continue
+        key = str(path)
+        signature = (stat.st_mtime_ns, stat.st_size)
+        if TODAY_COUNT_CACHE["file_signatures"].get(key) == signature:
+            count += TODAY_COUNT_CACHE["file_counts"].get(key, 0)
+            continue
+
+        file_count = 0
+        lines = read_recent_lines(path, max_bytes=max(SESSION_TAIL_BYTES, stat.st_size))
         for line in lines:
             try:
                 item = json.loads(line)
@@ -507,9 +571,20 @@ def today_conversation_count():
                     continue
                 dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone()
                 if dt.date() == today:
-                    count += 1
+                    file_count += 1
             except Exception:
                 continue
+        TODAY_COUNT_CACHE["file_signatures"][key] = signature
+        TODAY_COUNT_CACHE["file_counts"][key] = file_count
+        count += file_count
+
+    live_keys = {str(path) for path in paths}
+    for key in list(TODAY_COUNT_CACHE["file_counts"]):
+        if key not in live_keys:
+            TODAY_COUNT_CACHE["file_counts"].pop(key, None)
+            TODAY_COUNT_CACHE["file_signatures"].pop(key, None)
+
+    TODAY_COUNT_CACHE["count"] = count
     return count
 
 
@@ -620,6 +695,8 @@ class QuotaOverlay:
         self.bubble_current_y = None
         self.bubble_target_x = None
         self.bubble_target_y = None
+        self.root_geometry = None
+        self.bubble_geometry = None
         self.pet_miss_count = 0
         self.mood_index = 0
         self.pet_name = read_current_pet_name()
@@ -669,6 +746,14 @@ class QuotaOverlay:
 
     def label(self, key):
         return TEXT.get(self.language, TEXT["zh"]).get(key, key)
+
+    def set_window_geometry(self, widget, cache_attr, width, height, x, y):
+        geometry = f"{width}x{height}+{int(x)}+{int(y)}"
+        if getattr(self, cache_attr) == geometry:
+            return False
+        widget.geometry(geometry)
+        setattr(self, cache_attr, geometry)
+        return True
 
     def model_label_x(self):
         return 11 if self.language == "en" else 15
@@ -814,6 +899,12 @@ class QuotaOverlay:
         self.apply_info_update(self.pet_name, self.model_name, self.today_count)
 
     def apply_info_update(self, pet_name, model_name, today_count):
+        if (
+            self.pet_name == pet_name
+            and self.model_name == model_name
+            and self.today_count == today_count
+        ):
+            return
         self.pet_name = pet_name
         self.model_name = model_name
         self.today_count = today_count
@@ -965,7 +1056,14 @@ class QuotaOverlay:
         self.view_width = COLLAPSED_WIDTH if collapsed else WIDTH
         self.view_height = COLLAPSED_HEIGHT if collapsed else HEIGHT
         self.canvas.configure(width=self.view_width, height=self.view_height)
-        self.root.geometry(f"{self.view_width}x{self.view_height}+{int(self.current_x or 0)}+{int(self.current_y or 0)}")
+        self.set_window_geometry(
+            self.root,
+            "root_geometry",
+            self.view_width,
+            self.view_height,
+            self.current_x or 0,
+            self.current_y or 0,
+        )
         self.draw_static()
         if collapsed:
             self.bubble.withdraw()
@@ -1129,11 +1227,11 @@ class QuotaOverlay:
             if self.current_x is None or self.current_y is None:
                 self.current_x = self.target_x
                 self.current_y = self.target_y
-                self.root.geometry(f"{self.view_width}x{self.view_height}+{self.current_x}+{self.current_y}")
+                self.set_window_geometry(self.root, "root_geometry", self.view_width, self.view_height, self.current_x, self.current_y)
             if self.bubble_current_x is None or self.bubble_current_y is None:
                 self.bubble_current_x = self.bubble_target_x
                 self.bubble_current_y = self.bubble_target_y
-                self.bubble.geometry(f"{BUBBLE_WIDTH}x{BUBBLE_HEIGHT}+{self.bubble_current_x}+{self.bubble_current_y}")
+                self.set_window_geometry(self.bubble, "bubble_geometry", BUBBLE_WIDTH, BUBBLE_HEIGHT, self.bubble_current_x, self.bubble_current_y)
             self.root.deiconify()
             place_below_pet(self.root, pet_hwnd)
             if self.collapsed:
@@ -1157,18 +1255,28 @@ class QuotaOverlay:
         if self.target_x is not None and self.target_y is not None:
             self.current_x = follow_value(self.current_x, self.target_x)
             self.current_y = follow_value(self.current_y, self.target_y)
-            self.root.geometry(
-                f"{self.view_width}x{self.view_height}+{int(self.current_x)}+{int(self.current_y)}"
+            moved = self.set_window_geometry(
+                self.root,
+                "root_geometry",
+                self.view_width,
+                self.view_height,
+                self.current_x,
+                self.current_y,
             )
-            if self.pet_hwnd is not None:
+            if moved and self.pet_hwnd is not None:
                 place_below_pet(self.root, self.pet_hwnd)
         if not self.collapsed and self.bubble_target_x is not None and self.bubble_target_y is not None:
             self.bubble_current_x = follow_value(self.bubble_current_x, self.bubble_target_x)
             self.bubble_current_y = follow_value(self.bubble_current_y, self.bubble_target_y)
-            self.bubble.geometry(
-                f"{BUBBLE_WIDTH}x{BUBBLE_HEIGHT}+{int(self.bubble_current_x)}+{int(self.bubble_current_y)}"
+            moved = self.set_window_geometry(
+                self.bubble,
+                "bubble_geometry",
+                BUBBLE_WIDTH,
+                BUBBLE_HEIGHT,
+                self.bubble_current_x,
+                self.bubble_current_y,
             )
-            if self.pet_hwnd is not None:
+            if moved and self.pet_hwnd is not None:
                 place_below_pet(self.bubble, self.pet_hwnd)
         self.root.after(ANIMATE_MS, self.animate_position)
 
