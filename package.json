@@ -1,0 +1,33 @@
+{
+  "name": "saki-codex-pet-overlay",
+  "version": "0.1.0",
+  "description": "A bundled Saki Codex pet plus a floating quota/status overlay.",
+  "bin": {
+    "saki-codex-pet": "bin/saki-codex-pet.js"
+  },
+  "files": [
+    "bin/saki-codex-pet.js",
+    "overlay/quota_overlay.py",
+    "pets/saki/pet.json",
+    "pets/saki/spritesheet.webp",
+    "assets/all-actions.png",
+    "assets/desktop-showcase.png",
+    "assets/settings-panel.png",
+    "scripts/install.ps1",
+    "scripts/start.ps1",
+    "scripts/uninstall.ps1",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "codex",
+    "pet",
+    "desktop",
+    "overlay",
+    "saki"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
