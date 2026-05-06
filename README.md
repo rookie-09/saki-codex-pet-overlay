@@ -30,7 +30,7 @@ Codex 桌宠扩展包：内置用codex官方系统做的 Saki 宠物，并附带
 
 - Windows
 - Codex Desktop
-- Node.js 18+
+- Node.js 14+
 - Python 3，并且 `pythonw.exe` 或 `python.exe` 已加入 PATH
 
 ## Install
