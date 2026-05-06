@@ -41,19 +41,7 @@ GitHub 一键安装：
 npx github:rookie-09/saki-codex-pet-overlay install
 ```
 
-GitHub 仓库：
-
-```text
-https://github.com/rookie-09/saki-codex-pet-overlay
-```
-
 ## Commands
-
-安装并启动：
-
-```powershell
-npx github:rookie-09/saki-codex-pet-overlay install
-```
 
 启动挂件：
 
