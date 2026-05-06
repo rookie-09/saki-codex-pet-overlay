@@ -40,6 +40,7 @@ GitHub 一键安装：
 ```powershell
 npx github:rookie-09/saki-codex-pet-overlay install
 ```
+后需要重启codex才能检测到新的宠物
 
 ## Commands
 
