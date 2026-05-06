@@ -10,7 +10,7 @@
     "overlay/quota_overlay.py",
     "pets/saki/pet.json",
     "pets/saki/spritesheet.webp",
-    "assets/all-actions.png",
+    "assets/all-actions-preview.png",
     "assets/desktop-showcase.png",
     "assets/settings-panel.png",
     "scripts/install.ps1",
