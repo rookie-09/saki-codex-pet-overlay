@@ -901,7 +901,8 @@ class QuotaOverlay:
         self.canvas.create_line(182, 40, 195, 40, fill=colors["accent"], width=3, capstyle=tk.ROUND, tags=("fold",))
 
         self.canvas.create_text(88, 58, anchor="w", text=self.label("name"), fill=colors["muted"], font=("Segoe UI", 8, "bold"), tags=("settings_panel",))
-        self.create_name_entry()
+        rounded_rect(self.canvas, 134, 49, 202, 67, 4, fill="#ffffff", outline=colors["outline"], width=1, tags=("name_edit",))
+        self.canvas.create_text(138, 58, anchor="w", text=self.pet_name, fill="#121212", font=("Microsoft YaHei UI", 8, "bold"), width=58, tags=("name_edit",))
 
         self.canvas.create_text(88, 76, anchor="w", text=self.label("language"), fill=colors["muted"], font=("Segoe UI", 8, "bold"), tags=("settings_panel",))
         lang_items = [("en", "ENG", 143, 155), ("zh", "\u4e2d", 169, 181)]
@@ -986,6 +987,8 @@ class QuotaOverlay:
         self.name_var = None
 
     def create_name_entry(self):
+        if self.name_entry is not None:
+            return
         self.name_var = tk.StringVar(value=self.pet_name)
         self.name_entry = tk.Entry(
             self.root,
@@ -1003,6 +1006,8 @@ class QuotaOverlay:
         self.name_entry.bind("<Return>", self.save_name_entry)
         self.name_entry.bind("<FocusOut>", self.save_name_entry)
         self.canvas.create_window(134, 58, anchor="w", width=68, height=18, window=self.name_entry, tags=("settings_panel",))
+        self.name_entry.focus_set()
+        self.name_entry.selection_range(0, tk.END)
 
     def save_name_entry(self, _event=None):
         if self.name_var is None:
@@ -1028,6 +1033,9 @@ class QuotaOverlay:
         if "settings" in tags:
             self.settings_open = not self.settings_open
             self.draw_static()
+            return
+        if "name_edit" in tags:
+            self.create_name_entry()
             return
         if "fold" in tags:
             self.set_collapsed(True)
