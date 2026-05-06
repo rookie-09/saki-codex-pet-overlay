@@ -26,6 +26,11 @@ function ensureWindows() {
 }
 
 function copyDir(src, dest) {
+  if (typeof fs.cpSync === "function") {
+    fs.cpSync(src, dest, { recursive: true, force: true });
+    return;
+  }
+
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const srcPath = path.join(src, entry.name);
